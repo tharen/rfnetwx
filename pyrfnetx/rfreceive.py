@@ -7,6 +7,44 @@ import sqlite3
 import io
 
 import serial
+from smbus2 import smbus2
+
+def listen_i2c(address, db):
+    """
+    """
+
+    bus = smbus2.SMBus(1)
+
+    unit_pat = re.compile('U:([0-9]{4});')
+    dbconn = sqlite3.connect(db)
+
+    while True:
+        try:
+            msg = bus.read_i2c_block_data(address, 0, 32)
+            msg = ''.join(chr(c) for c in msg)
+            print(msg)
+            s = re.search(unit_pat, msg)
+            net_id = s.groups()[0]
+            unit_id = get_unit_id(net_id, dbconn)
+
+            print(net_id, unit_id, msg)
+            insert_message(msg, unit_id, dbconn)
+
+        except (KeyboardInterrupt, SystemExit):
+            print('Exiting!')
+            dbconn.close()
+            bus.close()
+            raise
+
+        except:
+            bus.close()
+            dbconn.close()
+            raise
+
+    # Note: We will never get here if all exceptions re-raise
+    bus.close()
+    dbconn.close()
+
 
 # TODO: This needs to run in it's own thread or process.
 def listen_serial(port, db, **kwargs):
@@ -16,11 +54,11 @@ def listen_serial(port, db, **kwargs):
     Args:
         port: Serial port to listen on.
         db: SQLite database to post data to.
-        
-    Addtional keyword arguments are passed to serial.Serial for 
+
+    Addtional keyword arguments are passed to serial.Serial for
     port configuration.
     """
-    
+
     unit_pat = re.compile('U:([0-9]{4});')
 
     dbconn = sqlite3.connect(db)
@@ -45,7 +83,7 @@ def listen_serial(port, db, **kwargs):
 
 #            print(net_id, unit_id, msg)
 #            insert_message(msg, unit_id, dbconn)
-        
+
         except (KeyboardInterrupt, SystemExit):
             print('Exiting!')
             dbconn.close()
@@ -56,7 +94,7 @@ def listen_serial(port, db, **kwargs):
             dbconn.close()
             tty.close()
             raise
-    
+
     # Note: We will never get here if all exceptions re-raise
     dbconn.close()
     tty.close()
@@ -96,7 +134,7 @@ def get_unit_id(net_id, conn):
         cur.close()
         conn.commit()
         unit_id = get_unit_id(net_id, conn)
-     
+
     return unit_id
 
 def init_db(path):
@@ -105,14 +143,14 @@ def init_db(path):
     """
 
     conn = sqlite3.connect(path)
-    
+
     try:
         conn.execute('drop table messages')
         conn.execute('drop table units')
 
     except:
         pass
-    
+
     units_sql = """
         create table units (
             unit_id text primary key default (lower(hex(randomblob(16))))
@@ -137,12 +175,12 @@ def init_db(path):
         """
 
     conn.execute(messages_sql)
-    
+
     conn.close()
 
 if __name__=='__main__':
     db = 'rfnetx_data.sqlite'
     init_db(db)
 
-    listen_serial('/dev/serial0', db)
+    listen_i2c(0x04, db)
 

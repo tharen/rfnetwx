@@ -21,14 +21,15 @@ def listen_i2c(address, db):
     while True:
         try:
             msg = bus.read_i2c_block_data(address, 0, 32)
+            #msg = bus.
             msg = ''.join(chr(c) for c in msg)
-            print(msg)
-            s = re.search(unit_pat, msg)
-            net_id = s.groups()[0]
-            unit_id = get_unit_id(net_id, dbconn)
-
-            print(net_id, unit_id, msg)
-            insert_message(msg, unit_id, dbconn)
+            print(msg.encode('utf-8'))
+#            s = re.search(unit_pat, msg)
+#            net_id = s.groups()[0]
+#            unit_id = get_unit_id(net_id, dbconn)
+#
+#            print(net_id, unit_id, msg)
+#            insert_message(msg, unit_id, dbconn)
 
         except (KeyboardInterrupt, SystemExit):
             print('Exiting!')

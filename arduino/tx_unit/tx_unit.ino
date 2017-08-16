@@ -45,7 +45,7 @@ void loop()
   float heatidx = dht.computeHeatIndex(tempf, humid);
 
   // Read the battery voltage
-  int batt_volts = round(analogRead(VMPIN) * 5.0/1023.0 * 2 * 10); // FIXME: Adjust *2 for actual resistor values
+  int batt_volts = round(analogRead(VMPIN) * 5.0/1023.0 * 2 * 10); // FIXME: Adjust *2 for measured resistor values
 
   // Format the message string to transmit
   char msg[30];

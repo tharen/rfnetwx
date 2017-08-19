@@ -5,25 +5,112 @@ Listen for sensors one or more channels and store received messages.
 import re
 import sqlite3
 import io
+import time
+import subprocess
 
 import serial
 from smbus2 import smbus2
+
+BUSNUM = 1
+
+def i2c_write_number(bus, address, number):
+    try:
+        bus.write_byte(address, number)
+        return True
+
+    except IOError:
+        subprocess.call(['i2cdetect','-y',str(BUSNUM)])
+        return False
+
+def i2c_read_array(bus, address, size):
+    try:
+        arr = bus.read_i2c_block_data(address, 0, size)
+
+    except IOError:
+        subprocess.call(['i2cdetect','-y',str(BUSNUM)])
+        return None
+
+    return arr
+
+def i2c_read_string(bus, address):
+    """
+    Return character data read from I2C.
+    """
+    s = ''
+    nretrys = 0
+    while 1:
+        if nretrys>5:
+            return None
+
+        try:
+            buff = bus.read_i2c_block_data(address, 0, 11)
+
+        except IOError:
+            raise
+            subprocess.call(['i2cdetect','-y',str(BUSNUM)])
+            # acknowledge the bad read
+            i2c_write_number(bus, address, 0)
+            nretrys += 1
+            continue
+
+        time.sleep(0.1)
+
+        # acknowledge the buffer, good or bad
+        print(buff[-1], sum(buff[:-1]))
+        if buff[-1]==sum(buff[:-1]):
+            i2c_write_number(bus, address, 1)
+        else:
+            i2c_write_number(bus, address, 0)
+            nretrys += 1
+
+        time.sleep(0.1)
+
+        done = False
+        for c in buff:
+            if c==0x0:
+                done = True
+                break
+
+            s += chr(c)
+
+        if done:
+            break
+
+    return s
 
 def listen_i2c(address, db):
     """
     """
 
-    bus = smbus2.SMBus(1)
+    bus = smbus2.SMBus(BUSNUM)
 
     unit_pat = re.compile('U:([0-9]{4});')
     dbconn = sqlite3.connect(db)
 
     while True:
         try:
-            msg = bus.read_i2c_block_data(address, 0, 32)
-            #msg = bus.
-            msg = ''.join(chr(c) for c in msg)
-            print(msg.encode('utf-8'))
+            r = i2c_write_number(bus, address, 1)
+            if not r:
+                print('Error writing I2C at {}'.format(address))
+
+            time.sleep(0.5)
+
+#            data = i2c_read_array(bus, address, 5)
+#            if data is None:
+#                print('Error reading I2C at {}'.format(address))
+#                data = []
+#
+#            print('Data: {}'.format([chr(c) for c in data]))
+
+            msg = i2c_read_string(bus, address)
+            if msg is None:
+                print('Error reading I2C at {}'.format(address))
+                msg = '*ERROR'
+
+            print('Telem: {}'.format(msg))
+
+            time.sleep(0.5)
+
 #            s = re.search(unit_pat, msg)
 #            net_id = s.groups()[0]
 #            unit_id = get_unit_id(net_id, dbconn)

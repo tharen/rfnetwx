@@ -7,132 +7,208 @@ import sqlite3
 import io
 import time
 import subprocess
+import logging
+from ctypes import c_ubyte
 
 import serial
-from smbus2 import smbus2
+from smbus2 import SMBusWrapper
 
 BUSNUM = 1
+DEVICE_ADDR = 0x10
+I2C_DELAY = 0.075
+LOOP_DELAY = 0.5
 
-def i2c_write_number(bus, address, number):
+logging.basicConfig()
+log = logging.getLogger()
+log.setLevel(logging.DEBUG)
+
+class I2CError(Exception):
+    pass
+
+def i2c_write_int(busnum, address, number):
     try:
-        bus.write_byte(address, number)
+        assert number<=255
+        with SMBusWrapper(busnum) as bus:
+            bus.write_byte(address, c_ubyte(number))
+
         return True
 
     except IOError:
-        subprocess.call(['i2cdetect','-y',str(BUSNUM)])
-        return False
+        log.debug('Error writing to I2C device: {:d}, value: {}'.format(
+                address, number))
+        raise I2CError()
 
-def i2c_read_array(bus, address, size):
-    try:
+    except:
+        raise
+
+def i2c_read_array(busnum, address, size):
+    with SMBusWrapper(busnum) as bus:
         arr = bus.read_i2c_block_data(address, 0, size)
-
-    except IOError:
-        subprocess.call(['i2cdetect','-y',str(BUSNUM)])
-        return None
 
     return arr
 
-def i2c_read_string(bus, address):
+def i2c_read_string(busnum, address, nbytes):
     """
     Return character data read from I2C.
     """
-    s = ''
-    nretrys = 0
-    while 1:
-        if nretrys>5:
-            return None
+    buff = []
+    try:
+        with SMBusWrapper(busnum) as bus:
+            for i in range(nbytes):
+                c = bus.read_byte(address)
+                buff.append(c)
+                time.sleep(I2C_DELAY)
 
-        try:
-            buff = bus.read_i2c_block_data(address, 0, 11)
+    except IOError:
+        log.debug('Error reading string. device: {:d}'.format(address))
+        raise I2CError()
 
-        except IOError:
-            raise
-            subprocess.call(['i2cdetect','-y',str(BUSNUM)])
-            # acknowledge the bad read
-            i2c_write_number(bus, address, 0)
-            nretrys += 1
-            continue
+    except:
+        raise
 
-        time.sleep(0.1)
-
-        # acknowledge the buffer, good or bad
-        print(buff[-1], sum(buff[:-1]))
-        if buff[-1]==sum(buff[:-1]):
-            i2c_write_number(bus, address, 1)
-        else:
-            i2c_write_number(bus, address, 0)
-            nretrys += 1
-
-        time.sleep(0.1)
-
-        done = False
-        for c in buff:
-            if c==0x0:
-                done = True
-                break
-
-            s += chr(c)
-
-        if done:
-            break
-
+    log.debug(buff)
+    s = ''.join([chr(v) for v in buff])
     return s
 
-def listen_i2c(address, db):
+def i2c_read_int(busnum, addr):
+    try:
+        with SMBusWrapper(busnum) as bus:
+            data = bus.read_byte(addr)
+            return int(data)
+
+    except IOError:
+        log.debug('Error reading int. device: :d{}'.format(addr))
+        raise I2CError()
+
+    except:
+        raise
+
+def listen_i2c(busnum, address, db):
     """
     """
 
-    bus = smbus2.SMBus(BUSNUM)
-
-    unit_pat = re.compile('U:([0-9]{4});')
     dbconn = sqlite3.connect(db)
 
     while True:
+        time.sleep(LOOP_DELAY)
         try:
-            r = i2c_write_number(bus, address, 1)
-            if not r:
-                print('Error writing I2C at {}'.format(address))
+            if not i2c_write_int(busnum, address, 1):
+                continue
 
-            time.sleep(0.5)
+            log.debug('Sent - 1')
+            time.sleep(I2C_DELAY)
 
-#            data = i2c_read_array(bus, address, 5)
-#            if data is None:
-#                print('Error reading I2C at {}'.format(address))
-#                data = []
-#
-#            print('Data: {}'.format([chr(c) for c in data]))
+            nbytes = i2c_read_int(busnum, address)
+            if not nbytes:
+                continue
 
-            msg = i2c_read_string(bus, address)
-            if msg is None:
-                print('Error reading I2C at {}'.format(address))
-                msg = '*ERROR'
+            elif not nbytes>0:
+                log.debug('Nothing to read - {}'.format(nbytes))
+                continue
 
-            print('Telem: {}'.format(msg))
+            # Signal the next transmit should be the message
+            log.debug('Signal ready to read.')
+            if not (i2c_write_int(busnum, address, 2)):
+                continue
 
-            time.sleep(0.5)
+            time.sleep(I2C_DELAY)
 
-#            s = re.search(unit_pat, msg)
-#            net_id = s.groups()[0]
-#            unit_id = get_unit_id(net_id, dbconn)
-#
-#            print(net_id, unit_id, msg)
-#            insert_message(msg, unit_id, dbconn)
+            log.debug('Read {} bytes'.format(nbytes))
+            nretrys = 0
+            while 1:
+                try:
+                    msg = i2c_read_string(busnum, address, nbytes)
+                    print(msg)
+
+                except I2CError:
+                    msg = None
+
+                except:
+                    raise
+
+                if not msg is None:
+                    break
+                    #continue
+
+                if nretrys<5:
+                    log.debug('Retry read - {}'.format(nretrys))
+                    # Signal to restart the current message
+                    time.sleep(I2C_DELAY)
+                    i2c_write_int(busnum, address, 4)
+                    time.sleep(I2C_DELAY)
+                    nretrys += 1
+
+                else:
+                    log.warn('Error reading message.')
+                    break
+
+            # Signal to advance the message queue
+            #bus.write_byte(address, 3)
+            i2c_write_int(busnum, address, 3)
+            time.sleep(I2C_DELAY)
+
+            log.info('Telem: {}'.format(msg))
+
+            data = parse_packet(msg)
+            if not data:
+                log.debug('Bad packet: {}'.format(msg))
+                time.sleep(LOOP_DELAY)
+
+            net_id = data['net_id']
+            unit_id = get_unit_id(net_id, dbconn)
+
+            m = 'Net ID: {}, Unit: {}, Msg: {}'
+            log.debug(m.format(net_id, unit_id, msg))
+
+            insert_message(msg, unit_id, dbconn)
 
         except (KeyboardInterrupt, SystemExit):
             print('Exiting!')
             dbconn.close()
-            bus.close()
             raise
 
+        except I2CError:
+            i2c_write_int(busnum, address, 0)
+
         except:
-            bus.close()
             dbconn.close()
             raise
 
     # Note: We will never get here if all exceptions re-raise
-    bus.close()
     dbconn.close()
 
+def parse_packet(packet):
+    fld_xref = {
+        'U':'net_id'
+        , 'T':'temperature'
+        , 'H':'humidity'
+        , 'V':'volts'
+        , 'C':'seq_num'
+    }
+
+    data = {}
+
+    try:
+        rx_seq, rx_time, packet = packet.split(',')
+        data['rx_seq'] = rx_seq
+        data['rx_time'] = rx_time
+
+    except:
+        raise IOError('Unexpected data structure. {}'.format(packet))
+
+    flds = packet.split(';')
+    for fld in flds:
+        abv, value = fld.split(':')
+        data[fld_xref[abv]] = value
+
+#    unit_pat = re.compile('U:([0-9]{4});')
+#    s = re.search(unit_pat, packet)
+#    if not s:
+#        return None
+#
+#    data['net_id'] = s.groups()[0]
+
+    return data
 
 # TODO: This needs to run in it's own thread or process.
 def listen_serial(port, db, **kwargs):
@@ -198,10 +274,11 @@ def insert_message(msg, unit_id, conn):
         """
     try:
         conn.execute(sql.format(**locals()))
+        log.debug('Messages stored to DB, {}'.format(msg))
 
     except:
-        print('Error inserting message {} for unit {}'.format(msg, unit_id))
-        raise
+        log.error('Error inserting message {} for unit {}'.format(msg, unit_id))
+        conn.rollback()
 
     conn.commit()
 
@@ -268,7 +345,7 @@ def init_db(path):
 
 if __name__=='__main__':
     db = 'rfnetx_data.sqlite'
-    init_db(db)
+#    init_db(db)
 
-    listen_i2c(0x04, db)
+    listen_i2c(BUSNUM, DEVICE_ADDR, db)
 

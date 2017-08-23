@@ -15,17 +15,22 @@ from smbus2 import SMBusWrapper
 
 BUSNUM = 1
 DEVICE_ADDR = 0x10
-I2C_DELAY = 0.075
-LOOP_DELAY = 0.5
+I2C_READ_DELAY = 0.005
+I2C_WRITE_DELAY = 0.075
+LOOP_DELAY = 0.1
 
 logging.basicConfig()
 log = logging.getLogger()
-log.setLevel(logging.DEBUG)
+log.setLevel(logging.INFO)
 
 class I2CError(Exception):
     pass
 
+class ChecksumError(Exception):
+    pass
+
 def i2c_write_int(busnum, address, number):
+    time.sleep(I2C_WRITE_DELAY)
     try:
         assert number<=255
         with SMBusWrapper(busnum) as bus:
@@ -34,7 +39,7 @@ def i2c_write_int(busnum, address, number):
         return True
 
     except IOError:
-        log.debug('Error writing to I2C device: {:d}, value: {}'.format(
+        log.error('Error writing to I2C device: {:d}, value: {}'.format(
                 address, number))
         raise I2CError()
 
@@ -42,6 +47,7 @@ def i2c_write_int(busnum, address, number):
         raise
 
 def i2c_read_array(busnum, address, size):
+    time.sleep(I2C_READ_DELAY)
     with SMBusWrapper(busnum) as bus:
         arr = bus.read_i2c_block_data(address, 0, size)
 
@@ -54,10 +60,10 @@ def i2c_read_string(busnum, address, nbytes):
     buff = []
     try:
         with SMBusWrapper(busnum) as bus:
-            for i in range(nbytes):
+            for i in range(nbytes+2):
+                time.sleep(I2C_READ_DELAY)
                 c = bus.read_byte(address)
                 buff.append(c)
-                time.sleep(I2C_DELAY)
 
     except IOError:
         log.debug('Error reading string. device: {:d}'.format(address))
@@ -67,12 +73,21 @@ def i2c_read_string(busnum, address, nbytes):
         raise
 
     log.debug(buff)
-    s = ''.join([chr(v) for v in buff])
+
+    buff_checksum = buff[-2]<<8 | buff[-1]
+    local_checksum = sum(buff[:-2])
+    if buff_checksum!=local_checksum:
+        log.error('Checksums do not match, buff: {}, local: {}'.format(
+                buff_checksum, local_checksum))
+        raise ChecksumError()
+
+    s = ''.join([chr(v) for v in buff[:-2]])
     return s
 
 def i2c_read_int(busnum, addr):
     try:
         with SMBusWrapper(busnum) as bus:
+            time.sleep(I2C_READ_DELAY)
             data = bus.read_byte(addr)
             return int(data)
 
@@ -94,9 +109,7 @@ def listen_i2c(busnum, address, db):
         try:
             if not i2c_write_int(busnum, address, 1):
                 continue
-
             log.debug('Sent - 1')
-            time.sleep(I2C_DELAY)
 
             nbytes = i2c_read_int(busnum, address)
             if not nbytes:
@@ -111,16 +124,13 @@ def listen_i2c(busnum, address, db):
             if not (i2c_write_int(busnum, address, 2)):
                 continue
 
-            time.sleep(I2C_DELAY)
-
             log.debug('Read {} bytes'.format(nbytes))
             nretrys = 0
             while 1:
                 try:
                     msg = i2c_read_string(busnum, address, nbytes)
-                    print(msg)
 
-                except I2CError:
+                except (I2CError, ChecksumError):
                     msg = None
 
                 except:
@@ -133,9 +143,7 @@ def listen_i2c(busnum, address, db):
                 if nretrys<5:
                     log.debug('Retry read - {}'.format(nretrys))
                     # Signal to restart the current message
-                    time.sleep(I2C_DELAY)
                     i2c_write_int(busnum, address, 4)
-                    time.sleep(I2C_DELAY)
                     nretrys += 1
 
                 else:
@@ -145,14 +153,13 @@ def listen_i2c(busnum, address, db):
             # Signal to advance the message queue
             #bus.write_byte(address, 3)
             i2c_write_int(busnum, address, 3)
-            time.sleep(I2C_DELAY)
 
-            log.info('Telem: {}'.format(msg))
+            log.info('Packet: {}'.format(msg))
 
             data = parse_packet(msg)
             if not data:
-                log.debug('Bad packet: {}'.format(msg))
-                time.sleep(LOOP_DELAY)
+                log.info('Bad packet: {}'.format(msg))
+                continue
 
             net_id = data['net_id']
             unit_id = get_unit_id(net_id, dbconn)
@@ -168,7 +175,9 @@ def listen_i2c(busnum, address, db):
             raise
 
         except I2CError:
-            i2c_write_int(busnum, address, 0)
+            log.error('I2C Error')
+            #i2c_write_int(busnum, address, 0)
+            continue
 
         except:
             dbconn.close()
@@ -344,8 +353,8 @@ def init_db(path):
     conn.close()
 
 if __name__=='__main__':
-    db = 'rfnetx_data.sqlite'
-#    init_db(db)
+    db = '/home/pi/rfnetx/pyrfnetx/rfnetx_data.sqlite'
+    init_db(db)
 
     listen_i2c(BUSNUM, DEVICE_ADDR, db)
 

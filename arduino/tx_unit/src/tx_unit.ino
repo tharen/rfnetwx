@@ -12,24 +12,27 @@
 #define DHTPIN 2 // Digital pin the DHT is connected to
 #define DHTTYPE DHT11 // DHT## Sensor model
 
+#define READSSIZE 10 // Number of readings to store
+
 DHT dht(DHTPIN, DHTTYPE);
 RH_ASK driver(BPS);
 
-uint8_t uid;
+uint8_t uid; // Unique ID stored in EEPROM
 int min_delay = 5000; // Min tx delay
 int max_delay = 6000; // Max tx delay
 
-// Structure for holding the current sensor values
+// Structure for holding the sensor values
+char data_flds[5] = {'U','T','H','V','C'}; //Field sensor/value codes
 typedef struct {
-  char flds[5] = {'U','T','H','V','C'}; //Field sensor/value codes
-  uint8_t uid = 0;
   int tempf = -999;
   int humid = -999;
-  int batt_volts = -999;
-  int seq = -999;
+  unsigned int batt_volts = 0;
+  unsigned int seq;
+  unsigned long time;
 } vals;
 
-vals curvals;
+vals reads_stack[READSSIZE];
+vals *cur_read;
 
 void setup()
 {
@@ -37,9 +40,9 @@ void setup()
     dht.begin();
 
     // Load the board UID that was previously put
-    EEPROM.get(0, curvals.uid);
+    EEPROM.get(0, uid);
 
-    curvals.seq = 0;
+    reads_stack[0].seq = 0;
     
     Serial.begin(9600);   // Debugging only
     if (!driver.init())
@@ -50,25 +53,25 @@ void loop()
 {
   //NOTE: Float values are rounded and cast to integers for transmission
   
+  // Get pointer to the current reading element
+  cur_read = &reads_stack[0];
+
   // Read the temperature and humidity
-  int humid = round(dht.readHumidity()*10);
-  int tempf = round(dht.readTemperature(true)*10); //Farenheit
+  cur_read->humid = round(dht.readHumidity()*10);
+  cur_read->tempf = round(dht.readTemperature(true)*10); //Farenheit
   // Compute the heat index
-  float heatidx = dht.computeHeatIndex(tempf, humid);
+  //float heatidx = dht.computeHeatIndex(tempf, humid);
 
   // Read the battery voltage
-  int batt_volts = round(analogRead(VMPIN) * 5.0/1023.0 * 2 * 10); // FIXME: Adjust *2 for measured resistor values
+  cur_read->batt_volts = round(analogRead(VMPIN) * 5.0/1023.0 * 2 * 10); // FIXME: Adjust *2 for measured resistor values
 
   // Format the message string to transmit
   char msg[30];
-  sprintf(msg, "U:%04d;T:%04d;H:%03d;V:%03d;C:%d", uid, tempf, humid, batt_volts, curvals.seq);
+  sprintf(msg, "U:%04d;T:%04d;H:%03d;V:%03d;C:%d"
+      , uid, cur_read->tempf, cur_read->humid
+      , cur_read->batt_volts, cur_read->seq);
   msg[strlen(msg)] = '\0';
 
-//  vals.flds  = {"U","T","H","V","C"};
-  curvals.tempf = tempf;
-  curvals.humid = humid;
-  curvals.batt_volts = batt_volts;
-  
   for (int j=0; j<TXTRYS; j++)
   {
     digitalWrite(TXLED, HIGH);
@@ -81,8 +84,8 @@ void loop()
 //  delay(random(min_delay, max_delay));
 
   // Enter power down state for 8 s with ADC and BOD module disabled
-  LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF);
-  LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF);
+//  LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF);
+//  LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF);
 //  LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);
 //  LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);
 //  LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);
@@ -90,13 +93,24 @@ void loop()
 
   // Small random delay to minimize collisions
   // FIXME: Probably not necessary with long sleep
-  delay(random(500, 1000));
+  //delay(random(500, 1000));
+
+  // Testing
+  delay(random(5000, 6000));
+
+  // Shift the values array
+  for (int j=READSSIZE; j-->1;){
+	reads_stack[j] = reads_stack[j-1];
+  }
 
   // Increment the counter
-  curvals.seq++;
-  if (curvals.seq>=5000)
+  cur_read->seq++;
+  if (cur_read->seq>=5000)
   {
-    curvals.seq = 0;
+    cur_read->seq = 0;
   }
-  
+  cur_read->tempf = 9999;
+  cur_read->humid = 9999;
+  cur_read->batt_volts = 9999;
+
 }

@@ -15,7 +15,7 @@ uint8_t msgcnt = 0;
 unsigned long last_rx = 0;
 byte last_buf[50];
 uint8_t last_buflen = 0;
-uint8_t send_msg_idx = 0;
+int8_t send_msg_idx = 0;
 uint8_t send_char_idx = 0;
 uint8_t i2c_cmd = 0;
 
@@ -39,6 +39,7 @@ typedef struct {
   unsigned long rcv_time = 0; // Time message was received locally
   uint8_t len = 0; // Data length
   uint8_t stat = 0; // Status 1-new; 2-transmitted
+  unsigned int checksum = 0;
 } data_message;
 
 // Set up a FIFO queue for passing messages downstream
@@ -92,10 +93,20 @@ void loop()
       messages[0].rcv_time = msg_time;
       messages[0].seq_num = msgcnt;
 
+      messages[0].checksum = 0;
+      for (uint8_t k; k<messages[0].len; k++){
+	      messages[0].checksum += messages[0].data[k];
+      }
+
       // Increment the message counter
       ++msgcnt;
       
       Serial.println(messages[0].data);
+//      Serial.print(highByte(messages[0].checksum));
+//      Serial.print(", ");
+//      Serial.print(lowByte(messages[0].checksum));
+//      Serial.print(", ");
+      Serial.println(messages[0].checksum);
 
       // Copy the last buffer received to skip re-trys
       // FIXME: This could be grabbed from the queue
@@ -118,6 +129,9 @@ bool compare_buffers(uint8_t buff1[50], uint8_t buff2[50], uint8_t buflen) {
 }
 
 char m[60];
+uint8_t ci = 0;
+uint8_t cb = 0;
+
 void i2c_send() {
 //  sprintf(m, "I2C request: i2c_cmd=%d; idx=%d; len=%d", i2c_cmd, send_msg_idx, messages[send_msg_idx].len);
 
@@ -139,11 +153,29 @@ void i2c_send() {
 
     case 2:
       // Send the next character
-      if (send_char_idx >= send_msg.len) {
+      if (send_char_idx >= send_msg.len+2) {
         Wire.write((uint8_t)0);
       
       } else {
-        Wire.write(send_msg.data[send_char_idx]);
+	if (send_char_idx<send_msg.len){
+          Wire.write(send_msg.data[send_char_idx]);
+	} else {
+	// Split the int checksum across the final 2 bytes
+	// FIXME: Checksum isn't working
+	  if (ci==0){
+	    cb = highByte(send_msg.checksum);
+            Wire.write(cb);
+//	    Serial.print("High byte: ");
+//	    Serial.println(cb);
+	    ci = 1;
+	  } else {
+	    cb = lowByte(send_msg.checksum);
+            Wire.write(cb);
+//	    Serial.print("Low byte: ");
+//	    Serial.println(cb);
+	    ci = 0;
+	  }
+	}
 
       }
 
@@ -179,6 +211,11 @@ void i2c_receive(int nbytes) {
 	}
       }
       
+      // If all packets have been sent upstream
+      if (send_msg_idx<0){
+        break;
+      }
+
       // Copy the message while it's being sent
 //      send_msg = messages[send_msg_idx];
 //      memcpy(&send_msg, &messages[send_msg_idx], sizeof(data_message));
@@ -187,9 +224,10 @@ void i2c_receive(int nbytes) {
       send_msg.rcv_time = messages[send_msg_idx].rcv_time;
       send_msg.len = messages[send_msg_idx].len;
       send_msg.stat = messages[send_msg_idx].stat;
-
+      send_msg.checksum = messages[send_msg_idx].checksum;
+      
       send_char_idx = 0;
-     
+           
       Serial.print("Send Msg: "); 
       Serial.println(send_msg.data);
 
@@ -218,8 +256,8 @@ void i2c_receive(int nbytes) {
       break;
   }
  
-  sprintf(m, "I2C received: %d", i2c_cmd);
-  Serial.println(m);
+//  sprintf(m, "I2C received: %d", i2c_cmd);
+//  Serial.println(m);
 
 }
 
